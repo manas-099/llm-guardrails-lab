@@ -80,6 +80,75 @@ Colang and answered without an LLM call — since these are fully predictable
 exchanges that don't need generation. Only genuine domain questions are
 routed to the model.
 
+### Experiment 6 — Dedicated Classifier Input Rail
+
+## Why we added this
+
+Experiment 3 relies on Colang's embedding similarity + LLM fallback to catch
+jailbreaks. Two weaknesses:
+
+- **Embedding similarity** only catches phrasing close to our example set.
+  Novel jailbreak wording (e.g. soft roleplay framing, hypotheticals) slips
+  past because it doesn't resemble the examples.
+- **LLM fallback** (used when similarity is low) is itself an LLM call — the
+  same kind of reasoning an adversarial prompt is trying to manipulate. Using
+  an LLM to guard against LLM manipulation is a weaker signal than we want.
+
+So we added a second, independent judgment: a small model trained
+specifically to detect prompt injection/jailbreak text, unrelated to our own
+examples and not reasoning-based.
+
+## What we used
+
+`protectai/deberta-v3-base-prompt-injection-v2` via HuggingFace
+`transformers.pipeline`.
+
+- Runs locally, no API call → low latency, no dependency on OpenRouter/LLM
+  uptime.
+- Binary output: `SAFE` (0) or `INJECTION` (1), with a confidence score.
+- Independent of Colang example phrasing and independent of the main LLM.
+
+## How it's wired in
+
+1. **Classifier function** (`classify_injection`) — plain wrapper around the
+   HF pipeline, returns `{"label": ..., "score": ...}`.
+
+2. **`@action`** (`check_prompt_injection`) — registers the function so
+   Colang flows can call it by name via `execute check_prompt_injection`.
+   Colang has no concept of `transformers`/model inference itself, so
+   `@action` is the bridge that lets a Colang flow trigger real Python code
+   and get a result back. It also auto-receives the turn's `context` dict
+   (user message, event, etc.) so we don't have to manually pass the message
+   in from Colang.
+
+3. **Colang flow** — wires the action into an **input rail**, meaning it runs
+   on *every* incoming message, *before* Colang's own dialog/intent matching
+   and before the main LLM ever sees the text:
+
+   ```
+   define flow classifier injection check
+       $is_injection = execute check_prompt_injection
+       if $is_injection
+           bot refuse jailbreak
+           stop
+   ```
+
+4. **YAML `rails.input.flows`** — registers this flow as an input rail so it's
+   enforced globally, not just reachable as an optional intent.
+
+## Threshold
+
+`INJECTION_CONFIDENCE_THRESHOLD = 0.85` — tunable. Needs to be validated
+against soft/indirect jailbreak phrasing (roleplay framing, hypotheticals),
+which this classifier tends to score lower than explicit "ignore previous
+instructions" style attacks. May need lowering (~0.5–0.6) depending on
+false-positive tolerance on legitimate security questions.
+
+
+
+
+
+
 ## Key design decisions
 
 - **Static responses for predictable intents.** Off-topic refusals,
@@ -88,10 +157,7 @@ routed to the model.
 - **Layered, incremental Colang.** Each experiment's Colang builds on the
   previous one (`COLANG_EXP3 = COLANG_EXP2 + ...`), so behavior is additive
   and easy to trace back to which experiment introduced which rule.
-- **Audit-first approach.** Before adding guardrails, the baseline was
-  deliberately stress-tested with prompt injection and jailbreak prompts to
-  identify real failure modes, rather than adding
-  protections speculatively.
+
 
 ## Running the experiments
 
