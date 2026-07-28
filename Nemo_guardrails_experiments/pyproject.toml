@@ -14,4 +14,6 @@ dependencies = [
     "langchain-text-splitters>=1.1.2",
     "nemoguardrails>=0.23.0",
     "streamlit>=1.60.0",
+    "torch>=2.13.0",
+    "transformers>=5.14.1",
 ]
