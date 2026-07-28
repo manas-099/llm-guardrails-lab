@@ -7,5 +7,6 @@ langchain_openrouter
 langchain-community
 langchain-text-splitters
 faiss-cpu
-
+transformers
+torch
 streamlit
